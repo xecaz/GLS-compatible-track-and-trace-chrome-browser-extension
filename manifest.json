@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "GLS-compatible Pracel Track & Trace",
+  "version": "3.1.1",
+  "description": "This is a GLS-compatible Track & Trace tracker. Track many packages, get updates",
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": ["https://gls-group.eu/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Gls-compatible Pracel Watcher", "default_popup": "popup.html" },
+  "options_page": "options.html",
+  "icons": { "16": "icon128.png", "48": "icon128.png", "128": "icon128.png" }
+}
+
