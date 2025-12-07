@@ -27,6 +27,19 @@ async function ensureAlarm() {
   chrome.alarms.create("poll", { periodInMinutes: Math.max(1, Number(s.intervalMinutes) || 5) });
 }
 
+// ===== Cookie preloader =====
+async function ensureGlsCookie() {
+  try {
+    // Load the GLS parcel tracking page to trigger session cookie
+    await fetch("https://gls-group.eu/EU/en/parcel-tracking", {
+      credentials: "include",
+      cache: "no-store"
+    });
+  } catch (e) {
+    console.warn("[GLS] Cookie preload failed:", e);
+  }
+}
+
 // Build GLS URL from tracking/postcode; convert spaces to '+'
 function buildGlsUrl(tracking, postcode) {
   const t = encodeURIComponent(String(tracking || "").trim());
@@ -36,19 +49,15 @@ function buildGlsUrl(tracking, postcode) {
 }
 
 // ===== Robust JSON event extractor (returns latest + full history) =====
-
-// Build a human location suffix like " (Neuenstein, Germany)" if available
 function formatLocation(ev) {
   const addr = ev.address || ev.addr || {};
   const city = addr.city || addr.town || addr.place || null;
   const countryName = addr.countryName || addr.country || null;
   const cc = addr.countryCode || addr.cc || null;
-
   const parts = [];
   if (city) parts.push(city);
   const country = countryName || cc || null;
   if (country) parts.push(country);
-
   return parts.length ? ` (${parts.join(", ")})` : "";
 }
 
@@ -56,22 +65,21 @@ function normalizeEvent(ev) {
   const baseText = ev.evtDscr || ev.evtDsc || ev.evtDesc || ev.desc || ev.event || ev.message || "";
   const loc = formatLocation(ev);
   const text = `${String(baseText).trim()}${loc}`;
-
-  const d = ev.date || ev.evtDate || ev.day || null;    // "2025-12-02"
-  const t = ev.time || ev.evtTime || ev.hour || null;   // "14:30:08"
+  const d = ev.date || ev.evtDate || ev.day || null;
+  const t = ev.time || ev.evtTime || ev.hour || null;
   const when = d && t ? `${d} ${t}` : (d || t || null);
-
   let ts = 0;
   if (d && t) ts = Date.parse(`${d}T${t}`);
   else if (d) ts = Date.parse(d);
-
   return { text, when, ts };
 }
+
 function isEventLike(x) {
   return x && typeof x === "object" && (
     "evtDscr" in x || "evtDsc" in x || "evtDesc" in x || "desc" in x || "event" in x || "message" in x
   );
 }
+
 function scanForEvents(obj, out = []) {
   const walk = (node) => {
     if (Array.isArray(node)) {
@@ -85,9 +93,14 @@ function scanForEvents(obj, out = []) {
   return out;
 }
 
+// ===== Fetch + Parse =====
 async function fetchLatestWithHistory(url) {
+  // Ensure cookie exists
+  await ensureGlsCookie();
+
   const res = await fetch(url, {
     cache: "no-store",
+    credentials: "include", // use cookie
     referrerPolicy: "no-referrer",
     headers: { "Accept": "application/json,text/plain;q=0.9,*/*;q=0.8" }
   });
@@ -103,7 +116,6 @@ async function fetchLatestWithHistory(url) {
     try { data = JSON.parse(txt); } catch { throw new Error("Invalid JSON response"); }
   }
 
-  // Prefer common shape
   let arrays = [];
   if (Array.isArray(data?.tuStatus)) arrays = [data.tuStatus];
   else if (Array.isArray(data?.data?.tuStatus)) arrays = [data.data.tuStatus];
@@ -111,12 +123,10 @@ async function fetchLatestWithHistory(url) {
 
   if (!arrays.length) return { latestText: "No status yet", latestWhen: null, history: [] };
 
-  // Flatten, normalize, sort newest->oldest
   const events = arrays.flat().filter(e => typeof e === "object").map(normalizeEvent);
   events.sort((a, b) => (b.ts || 0) - (a.ts || 0));
 
   const latest = events[0] || { text: "No status yet", when: null };
-  // History newest first; include location baked into text
   const history = events
     .filter(e => e.text && e.text !== "No status yet")
     .map(e => (e.when ? `${e.when} – ${e.text}` : e.text));
@@ -134,17 +144,16 @@ async function checkOne(tr, cfg) {
 
     tr.lastCheckedAt = new Date().toISOString();
     tr.lastError = null;
-    tr.history = history; // store full history (with location)
+    tr.history = history;
 
     if (tr.lastHash !== signature) {
       tr.lastHash = signature;
-      tr.lastText = latestText; // includes location
+      tr.lastText = latestText;
       tr.lastWhen = latestWhen;
 
       chrome.action.setBadgeText({ text: "NEW" });
       chrome.action.setBadgeBackgroundColor({ color: [0, 150, 136, 255] });
 
-      // Desktop notification now includes location
       notify(tr.description ? `${tr.description} — status updated` : "GLS status updated",
              latestWhen ? `${latestWhen}\n${latestText}` : latestText,
              `gls-${tr.id}`);
@@ -237,6 +246,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return sendResponse({ ok: false, error: String(e?.message || e) });
     }
   })();
-  return true; // async
+  return true;
 });
 
